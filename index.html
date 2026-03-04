@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Traffic Light Classifier + UART</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-screen flex items-center justify-center bg-gradient-to-br from-sky-100 via-indigo-100 to-pink-100">
+  <div class="bg-white/80 backdrop-blur-lg shadow-2xl rounded-2xl p-8 w-full max-w-lg text-center border border-white/50">
+    <h1 class="text-3xl font-bold text-gray-800 mb-3"> Traffic Light Classifier</h1>
+    <p class="text-gray-600 mb-6">Detects a traffic light color using AI and send it to your FPGA via UART.</p>
+    <div class="space-y-4">
+      <!-- File Upload -->
+      <input id="image" type="file" accept="image/*"
+        class="w-full border-2 border-gray-300 hover:border-indigo-400 transition rounded-lg px-3 py-2 text-gray-700 focus:outline-none" />
+
+
+      <!-- Buttons -->
+      <div class="flex flex-col sm:flex-row gap-3 justify-center">
+        <button onclick="connectUART()"
+          class="w-full sm:w-auto bg-indigo-500 hover:bg-indigo-600 text-white px-5 py-2.5 rounded-lg font-medium shadow">
+           Connect UART
+        </button>
+        <button onclick="classifyImage()"
+          class="w-full sm:w-auto bg-green-500 hover:bg-green-600 text-white px-5 py-2.5 rounded-lg font-medium shadow">
+          Classify
+        </button>
+      </div>
+    </div>
+    <!-- Result Section -->
+    <div id="result"
+      class="mt-6 text-lg font-semibold text-gray-700 bg-gray-100 rounded-xl py-3 px-4 border border-gray-300 transition-all duration-300">
+      Awaiting image...
+    </div>
+    <!-- Image Preview -->
+    <img id="uploadedImage" alt="Uploaded Image Preview"
+      class="mt-6 mx-auto rounded-xl shadow-lg max-h-64 object-contain hidden" />
+  </div>
+
+  <script>
+    let serialPort;
+    let writer;
+    // Mapping for one-hot encoding
+    const signalMap = {
+      "red": 0b0001,
+      "yellow": 0b0010,
+      "green": 0b0100,
+      "no signal": 0b1000
+    };
+
+     async function connectUART() {
+      try {
+        serialPort = await navigator.serial.requestPort();
+        await serialPort.open({ baudRate: 9600 });
+        writer = serialPort.writable.getWriter();
+        alert("✅ UART connected successfully!");
+      } catch (err) {
+        alert("Failed to connect UART: " + err.message);
+      }
+    }
+
+    // Send encoded value over UART
+    async function sendToUART(value) {
+      if (!writer) {
+        alert("UART not connected. Click 'Connect UART' first!");
+        return;
+      }
+      const buffer = new Uint8Array([value]);
+      await writer.write(buffer);
+      console.log("Sent via UART:", buffer);
+    }
+
+    // Classify Image
+    async function classifyImage() {
+      const apiKey = 'c53X0cuZHffQr8VQFpup'; // your Roboflow API key
+      const fileInput = document.getElementById('image');
+      const resultElement = document.getElementById('result');
+      const preview = document.getElementById('uploadedImage');
+
+      if (fileInput.files.length === 0) {
+        alert('Please upload an image.');
+        return;
+      }
+
+      const file = fileInput.files[0];
+      if (!file.type.startsWith('image/')) {
+        alert('Please upload a valid image file.');
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = async function (e) {
+        const imageDataUrl = e.target.result;
+        preview.src = imageDataUrl;
+        preview.classList.remove('hidden');
+        let base64 = imageDataUrl.split(',')[1];
+        const url = `https://detect.roboflow.com/traffic_light_color/5?api_key=${apiKey}`;
+        try {
+          resultElement.textContent = "⏳ Classifying...";
+          resultElement.className = "mt-6 text-lg font-semibold text-gray-700 bg-yellow-50 border border-yellow-300 rounded-xl py-3 px-4 animate-pulse";
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+              'Accept': 'application/json'
+            },
+            body: base64
+          });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const data = await response.json();
+          const predictions = data.predictions || [];
+          if (predictions.length === 0) {
+            resultElement.textContent = '⚪ No traffic light detected';
+            resultElement.className = "mt-6 text-lg font-semibold text-gray-700 bg-gray-100 border border-gray-300 rounded-xl py-3 px-4";
+            await sendToUART(signalMap["no signal"]);
+            return;
+          }
+          const bestPrediction = predictions.reduce((a, b) => a.confidence > b.confidence ? a : b);
+          const colorClass = bestPrediction.class.toLowerCase();
+          const conf = (bestPrediction.confidence * 100).toFixed(2);
+          const colorStyles = {
+            red: "bg-red-100 border-red-400 text-red-700",
+            yellow: "bg-yellow-100 border-yellow-400 text-yellow-700",
+            green: "bg-green-100 border-green-400 text-green-700",
+          };
+          resultElement.textContent = `✅ Detected: ${bestPrediction.class} (${conf}%)`;
+resultElement.className = `mt-6 text-lg font-semibold rounded-xl py-3 px-4 border ${colorStyles[colorClass] || 'bg-gray-100 border-gray-300 text-gray-700'}`;
+          const encoded = signalMap[colorClass] ?? 0;
+          console.log(`Color: ${colorClass}, Code: ${encoded.toString(2).padStart(4, '0')}`);
+          await sendToUART(encoded);
+        } catch (err) {
+          console.error("Error:", err);
+          resultElement.textContent = "Error classifying image.";
+          resultElement.className = "mt-6 text-lg font-semibold text-red-700 bg-red-100 border border-red-400 rounded-xl py-3 px-4";
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+  </script>
+</body>
+</html>
